@@ -16,15 +16,3 @@ The status-bar `Log Lens` popup is the V0.1 control center. It binds one project
 - Dynamic/unsupported configuration stays Raw or unknown. The parser never starts Logback, loads user classes, resolves external entities, or accesses network resources.
 
 Kotlin, Log4j2, fluent SLF4J, Spring profiles, includes, conditional/sifting/custom routing, runtime validation, module mappings and Marketplace publishing are outside V0.1.
-
-## Build and test
-
-Use PowerShell 7 and JDK/JBR 21. The repository script retries only network-like Gradle failures and serializes IntelliJ instrumentation workers:
-
-```powershell
-& '.\scripts\run-gradle-with-retry.ps1' `
-  -Task @('test', 'buildPlugin', 'verifyPluginProjectConfiguration', 'verifyPluginStructure') `
-  -GradleJavaHome 'C:\Program Files\JetBrains\IntelliJ IDEA 2025.3.5\jbr'
-```
-
-The packaged plugin is written under `build/distributions/`. Install that ZIP into IntelliJ IDEA 2025.3.x for the final visual/interaction check.
