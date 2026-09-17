@@ -5,7 +5,7 @@
 
     <!-- Public plugin name should be written in Title Case.
      Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-name -->
-    <name>LogbackLens</name>
+    <name>Log Lens</name>
 
     <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
     <vendor>gbk</vendor>
@@ -13,21 +13,21 @@
     <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-description -->
     <description><![CDATA[
-        Technical feasibility plugin for validating Log Lens message rendering in IntelliJ IDEA.
+        Makes SLF4J message templates easier to read and explains statically provable Logback file routes without changing source code.
         ]]></description>
+
+    <idea-version since-build="253" until-build="253.*"/>
 
     <!-- Product and plugin compatibility requirements.
          Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.java</depends>
 
-    <resource-bundle>messages.MyMessageBundle</resource-bundle>
-
-    <!-- Extensions defined by the plugin.
-         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow id="Rendering Spike" factoryClass="cn.gbk.MyToolWindowFactory"
-                    icon="AllIcons.Toolwindows.ToolWindowPalette"/>
+        <postStartupActivity implementation="cn.gbk.logbacklens.message.MessageLensStartupActivity"/>
+        <postStartupActivity implementation="cn.gbk.logbacklens.configuration.LogbackConfigurationStartupActivity"/>
+        <postStartupActivity implementation="cn.gbk.logbacklens.route.RouteLensStartupActivity"/>
+        <statusBarWidgetFactory id="LogLensStatus" implementation="cn.gbk.logbacklens.ui.LogLensStatusBarWidgetFactory"/>
     </extensions>
 
 </idea-plugin>

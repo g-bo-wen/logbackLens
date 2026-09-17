@@ -1,12 +1,8 @@
-package cn.gbk.logbacklens.spike
+package cn.gbk.logbacklens.message
 
 internal object InteractionFixture {
     const val SOURCE = """class DemoService {
-    interface Logger {
-        void info(String template, Object... arguments);
-    }
-
-    private Logger log;
+    private org.slf4j.Logger log;
 
     void submit(String orderId, long accountId) {
         log.info("order {} {}", orderId, accountId);
@@ -15,11 +11,7 @@ internal object InteractionFixture {
 """
 
     const val MULTI_TARGET_SOURCE = """class DemoService {
-    interface Logger {
-        void info(String template, Object... arguments);
-    }
-
-    private Logger log;
+    private org.slf4j.Logger log;
 
     void submit(String customerId, long accountId) {
         log.info("order {} {}", customerId, accountId);

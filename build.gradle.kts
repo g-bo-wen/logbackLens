@@ -14,7 +14,7 @@ dependencies {
 
     // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
     intellijPlatform {
-        local("C:/Program Files/JetBrains/IntelliJ IDEA 2025.3.5")
+        intellijIdea("2025.3.5")
         bundledPlugin("com.intellij.java")
         testFramework(TestFrameworkType.Platform)
     }
@@ -31,8 +31,15 @@ kotlin {
 intellijPlatform {
     pluginVerification {
         ides {
-            local(file("C:/Program Files/JetBrains/IntelliJ IDEA 2025.3.5"))
+            recommended()
         }
+    }
+}
+
+tasks {
+    patchPluginXml {
+        sinceBuild.set("253")
+        untilBuild.set("263.*")
     }
 }
 

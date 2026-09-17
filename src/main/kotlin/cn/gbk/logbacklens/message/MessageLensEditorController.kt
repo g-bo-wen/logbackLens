@@ -1,8 +1,9 @@
-package cn.gbk.logbacklens.spike
+package cn.gbk.logbacklens.message
 
-import cn.gbk.BlueExpressionRenderer
+import cn.gbk.logbacklens.settings.LogLensApplicationSettings
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
@@ -14,10 +15,13 @@ import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.editor.event.EditorFactoryEvent
 import com.intellij.openapi.editor.event.EditorFactoryListener
+import com.intellij.openapi.editor.event.SelectionEvent
+import com.intellij.openapi.editor.event.SelectionListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.util.Alarm
+import com.intellij.util.concurrency.AppExecutorUtil
 
 internal enum class MessageLensMode {
     LENS,
@@ -29,6 +33,8 @@ internal enum class MessageLensMode {
 internal class MessageLensEditorController private constructor(
     private val project: Project,
     editor: Editor,
+    owner: Disposable,
+    private val settingsProvider: () -> cn.gbk.logbacklens.settings.LogLensApplicationState,
     private val modeChanged: (MessageLensMode) -> Unit,
 ) : Disposable {
     private var editor: Editor? = editor
@@ -39,9 +45,10 @@ internal class MessageLensEditorController private constructor(
     private var installedTargets = emptyList<MessageLensTarget>()
     private var mode = MessageLensMode.UNAVAILABLE
     private var disposed = false
+    private var refreshGeneration = 0L
 
     init {
-        Disposer.register(project, this)
+        Disposer.register(owner, this)
         editor.document.addDocumentListener(object : DocumentListener {
             override fun documentChanged(event: DocumentEvent) {
                 clearPresentation()
@@ -50,9 +57,12 @@ internal class MessageLensEditorController private constructor(
             }
         }, this)
         editor.caretModel.addCaretListener(object : CaretListener {
-            override fun caretPositionChanged(event: CaretEvent) = refreshNow()
-            override fun caretAdded(event: CaretEvent) = refreshNow()
-            override fun caretRemoved(event: CaretEvent) = refreshNow()
+            override fun caretPositionChanged(event: CaretEvent) = refreshCaretPresentation()
+            override fun caretAdded(event: CaretEvent) = refreshCaretPresentation()
+            override fun caretRemoved(event: CaretEvent) = refreshCaretPresentation()
+        }, this)
+        editor.selectionModel.addSelectionListener(object : SelectionListener {
+            override fun selectionChanged(event: SelectionEvent) = refreshCaretPresentation()
         }, this)
         EditorFactory.getInstance().addEditorFactoryListener(object : EditorFactoryListener {
             override fun editorReleased(event: EditorFactoryEvent) {
@@ -66,29 +76,73 @@ internal class MessageLensEditorController private constructor(
 
     internal fun requestRefresh(delayMillis: Int = REFRESH_DELAY_MS) {
         if (disposed) return
+        val generation = ++refreshGeneration
         refreshAlarm.cancelAllRequests()
-        refreshAlarm.addRequest(::refreshNow, delayMillis)
+        refreshAlarm.addRequest({ refreshAsync(generation) }, delayMillis)
+    }
+
+    internal fun invalidate() {
+        if (disposed) return
+        clearPresentation()
+        requestRefresh(0)
     }
 
     internal fun refreshNow() {
-        if (disposed || project.isDisposed) return
+        val generation = ++refreshGeneration
+        refreshAlarm.cancelAllRequests()
+        val context = prepareRefresh() ?: return
+        val targets = ReadAction.compute<List<MessageLensTarget>, RuntimeException> {
+            context.psiDocumentManager.getPsiFile(context.editor.document)?.let { file ->
+                MessageLensPsiAnalyzer.analyzeAll(file, context.editor.document)
+            }.orEmpty()
+        }
+        applyTargets(generation, context, targets)
+    }
+
+    private fun refreshAsync(generation: Long) {
+        if (generation != refreshGeneration) return
+        val context = prepareRefresh() ?: return
+        ReadAction.nonBlocking<List<MessageLensTarget>> {
+            context.psiDocumentManager.getPsiFile(context.editor.document)?.let { file ->
+                MessageLensPsiAnalyzer.analyzeAll(file, context.editor.document)
+            }.orEmpty()
+        }
+            .expireWith(this)
+            .coalesceBy(this)
+            .finishOnUiThread(ModalityState.any()) { targets -> applyTargets(generation, context, targets) }
+            .submit(AppExecutorUtil.getAppExecutorService())
+    }
+
+    private fun prepareRefresh(): RefreshContext? {
+        if (disposed || project.isDisposed) return null
         ApplicationManager.getApplication().assertIsDispatchThread()
-        val activeEditor = editor?.takeUnless(Editor::isDisposed) ?: return
+        val activeEditor = editor?.takeUnless(Editor::isDisposed) ?: return null
+        val settings = settingsProvider()
+        if (!settings.messageLensEnabled) {
+            clearPresentation()
+            setMode(MessageLensMode.UNAVAILABLE)
+            return null
+        }
+
         val document = activeEditor.document
         val psiDocumentManager = PsiDocumentManager.getInstance(project)
-
         if (!psiDocumentManager.isCommitted(document)) {
             clearPresentation()
             setMode(MessageLensMode.RAW)
             psiDocumentManager.performForCommittedDocument(document) { requestRefresh(0) }
-            return
+            return null
         }
 
-        val targets = ReadAction.compute<List<MessageLensTarget>, RuntimeException> {
-            psiDocumentManager.getPsiFile(document)?.let { file ->
-                MessageLensPsiAnalyzer.analyzeAll(file, document)
-            }.orEmpty()
-        }
+        return RefreshContext(activeEditor, psiDocumentManager, settings)
+    }
+
+    private fun applyTargets(
+        generation: Long,
+        context: RefreshContext,
+        targets: List<MessageLensTarget>,
+    ) {
+        if (generation != refreshGeneration || disposed || project.isDisposed || context.editor.isDisposed) return
+        if (context.editor.document.modificationStamp != context.modificationStamp) return
         if (targets.isEmpty()) {
             clearPresentation()
             setMode(MessageLensMode.UNAVAILABLE)
@@ -96,12 +150,39 @@ internal class MessageLensEditorController private constructor(
         }
 
         val lensTargets = targets.filterNot { target ->
-            activeEditor.caretModel.allCarets.any { caret -> caret.intersects(target) }
+            context.editor.caretModel.allCarets.any { caret -> caret.intersects(target) }
+        }
+        if (currentTargets == targets && installedTargets == lensTargets && presentationIsValid()) return
+        installPresentation(context.editor, targets, lensTargets, context.settings.messageExpressionColor)
+    }
+
+    private fun refreshCaretPresentation() {
+        if (disposed || project.isDisposed) return
+        val activeEditor = editor?.takeUnless(Editor::isDisposed) ?: return
+        val settings = settingsProvider()
+        if (!settings.messageLensEnabled) {
+            clearPresentation()
+            setMode(MessageLensMode.UNAVAILABLE)
+            return
+        }
+        if (currentTargets.isEmpty()) {
+            requestRefresh(0)
+            return
         }
 
-        if (currentTargets == targets && installedTargets == lensTargets && presentationIsValid()) return
-        installPresentation(activeEditor, targets, lensTargets)
+        val lensTargets = currentTargets.filterNot { target ->
+            activeEditor.caretModel.allCarets.any { caret -> caret.intersects(target) }
+        }
+        if (installedTargets == lensTargets && presentationIsValid()) return
+        installPresentation(activeEditor, currentTargets, lensTargets, settings.messageExpressionColor)
     }
+
+    private data class RefreshContext(
+        val editor: Editor,
+        val psiDocumentManager: PsiDocumentManager,
+        val settings: cn.gbk.logbacklens.settings.LogLensApplicationState,
+        val modificationStamp: Long = editor.document.modificationStamp,
+    )
 
     internal fun currentMode(): MessageLensMode = mode
     internal fun ownedFoldCount(): Int = folds.count(FoldRegion::isValid)
@@ -115,6 +196,7 @@ internal class MessageLensEditorController private constructor(
         editor: Editor,
         targets: List<MessageLensTarget>,
         lensTargets: List<MessageLensTarget>,
+        color: String,
     ) {
         clearPresentation()
         removeClonedLensFolds(editor, targets)
@@ -139,7 +221,7 @@ internal class MessageLensEditorController private constructor(
                 editor.inlayModel.addInlineElement(
                     range.endOffset,
                     true,
-                    BlueExpressionRenderer("‹$expression›"),
+                    MessageLensRenderer("‹$expression›", color),
                 )
             }
             if (targetInlays.size != target.expressionTexts.size) {
@@ -167,8 +249,7 @@ internal class MessageLensEditorController private constructor(
             .map { range -> range.startOffset to range.endOffset }
             .toSet()
         val clonedFolds = editor.foldingModel.allFoldRegions.filter { fold ->
-            fold.isValid && fold.placeholderText.isEmpty() &&
-                (fold.startOffset to fold.endOffset) in hiddenRanges
+            fold.isValid && fold.placeholderText.isEmpty() && (fold.startOffset to fold.endOffset) in hiddenRanges
         }
         removeFolds(editor, clonedFolds)
     }
@@ -176,16 +257,12 @@ internal class MessageLensEditorController private constructor(
     private fun removeFolds(editor: Editor, regions: Collection<FoldRegion>) {
         if (regions.isEmpty()) return
         editor.foldingModel.runBatchFoldingOperation {
-            regions.forEach { fold ->
-                if (fold.isValid) editor.foldingModel.removeFoldRegion(fold)
-            }
+            regions.forEach { fold -> if (fold.isValid) editor.foldingModel.removeFoldRegion(fold) }
         }
     }
 
     private fun clearPresentation() {
-        inlays.toList().forEach { inlay ->
-            if (inlay.isValid) inlay.dispose()
-        }
+        inlays.toList().forEach { inlay -> if (inlay.isValid) inlay.dispose() }
         inlays.clear()
 
         val activeEditor = editor
@@ -223,10 +300,16 @@ internal class MessageLensEditorController private constructor(
 
     companion object {
         private const val REFRESH_DELAY_MS = 100
+
         fun attach(
             project: Project,
             editor: Editor,
+            owner: Disposable = project,
+            settingsProvider: () -> cn.gbk.logbacklens.settings.LogLensApplicationState = {
+                LogLensApplicationSettings.getInstance().snapshot()
+            },
             modeChanged: (MessageLensMode) -> Unit = {},
-        ): MessageLensEditorController = MessageLensEditorController(project, editor, modeChanged)
+        ): MessageLensEditorController =
+            MessageLensEditorController(project, editor, owner, settingsProvider, modeChanged)
     }
 }

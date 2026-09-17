@@ -1,5 +1,7 @@
-package cn.gbk.logbacklens.spike
+package cn.gbk.logbacklens.message
 
+import cn.gbk.logbacklens.settings.LogLensApplicationState
+import cn.gbk.logbacklens.settings.LogLensApplicationSettings
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
@@ -10,6 +12,94 @@ import com.intellij.psi.PsiDocumentManager
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
 class MessageLensInteractionTest : BasePlatformTestCase() {
+    fun testProjectServiceAttachesExistingEditorAndReactsToApplicationSetting() {
+        val editor = configureFixture()
+        editor.caretModel.moveToOffset(0)
+        val service = MessageLensProjectService.getInstance(project)
+        val settings = LogLensApplicationSettings.getInstance()
+        val original = settings.snapshot()
+
+        try {
+            service.start()
+            val controller = requireNotNull(service.controllerForTest(editor))
+            controller.refreshNow()
+            assertEquals(MessageLensMode.LENS, controller.currentMode())
+
+            settings.update(original.copy(messageLensEnabled = false))
+            controller.refreshNow()
+            assertEquals(MessageLensMode.UNAVAILABLE, controller.currentMode())
+            assertEquals(0, controller.ownedFoldCount())
+        } finally {
+            settings.update(original)
+        }
+    }
+
+    fun testSupportedSlf4jClassicMethodsAndRawBoundaryMatrix() {
+        val source = """class DemoService {
+            private org.slf4j.Logger audit;
+            private FakeLogger fake;
+            private static final String TEMPLATE = "constant {}";
+
+            void write(Object value, RuntimeException failure) {
+                audit.trace("trace {}", value);
+                audit.debug("debug {}", value);
+                audit.info("info {}", value);
+                audit.warn("warn {}", value);
+                audit.error("error {}", value);
+                fake.info("wrong receiver {}", value);
+                audit.info("no placeholder", value);
+                audit.info("too few {} {}", value);
+                audit.info("too many {}", value, value);
+                audit.info(TEMPLATE, value);
+                audit.info("cross " + "{" + "}", value);
+                audit.info("escaped \\{}", value);
+                audit.error("throwable {} {}", value, failure);
+                audit.atInfo();
+            }
+
+            interface FakeLogger {
+                void info(String template, Object... arguments);
+            }
+        }""".trimIndent()
+        val editor = configureText(source)
+
+        val targets = analyzeAll(editor)
+
+        assertEquals(targets.joinToString { target -> text(editor, target.callRange) }, 5, targets.size)
+        assertEquals(
+            listOf("trace", "debug", "info", "warn", "error"),
+            targets.map { target -> text(editor, target.callRange).substringBefore('(').substringAfterLast('.') },
+        )
+    }
+
+    fun testMessageSettingDisablesAndRestoresPresentationWithoutChangingDocument() {
+        val editor = configureFixture()
+        val original = editor.document.text
+        var settings = LogLensApplicationState()
+        val controller = MessageLensEditorController.attach(
+            project,
+            editor,
+            settingsProvider = { settings.copy() },
+        )
+        editor.caretModel.moveToOffset(0)
+        controller.refreshNow()
+        assertEquals(MessageLensMode.LENS, controller.currentMode())
+
+        settings = settings.copy(messageLensEnabled = false)
+        controller.invalidate()
+        controller.refreshNow()
+        assertEquals(MessageLensMode.UNAVAILABLE, controller.currentMode())
+        assertEquals(0, controller.ownedFoldCount())
+        assertEquals(0, controller.ownedInlayCount())
+        assertEquals(original, editor.document.text)
+
+        settings = settings.copy(messageLensEnabled = true, messageExpressionColor = "#123456")
+        controller.invalidate()
+        controller.refreshNow()
+        assertEquals(MessageLensMode.LENS, controller.currentMode())
+        assertEquals(original, editor.document.text)
+    }
+
     fun testJavaPsiDerivesAllRangesFromTheCurrentDocument() {
         val editor = configureFixture()
         val original = editor.document.text
@@ -371,6 +461,18 @@ class MessageLensInteractionTest : BasePlatformTestCase() {
     }
 
     private fun configureText(source: String): Editor {
+        myFixture.addFileToProject(
+            "org/slf4j/Logger.java",
+            """package org.slf4j;
+                public interface Logger {
+                    void trace(String template, Object... arguments);
+                    void debug(String template, Object... arguments);
+                    void info(String template, Object... arguments);
+                    void warn(String template, Object... arguments);
+                    void error(String template, Object... arguments);
+                }
+            """.trimIndent(),
+        )
         myFixture.configureByText("DemoService.java", source)
         commit(myFixture.editor)
         return myFixture.editor
@@ -381,8 +483,14 @@ class MessageLensInteractionTest : BasePlatformTestCase() {
         MessageLensPsiAnalyzer.analyze(file, editor.document)
     }
 
+    private fun analyzeAll(editor: Editor): List<MessageLensTarget> =
+        ReadAction.compute<List<MessageLensTarget>, RuntimeException> {
+            val file = PsiDocumentManager.getInstance(project).getPsiFile(editor.document) ?: return@compute emptyList()
+            MessageLensPsiAnalyzer.analyzeAll(file, editor.document)
+        }
+
     private fun attach(editor: Editor): MessageLensEditorController =
-        MessageLensEditorController.attach(project, editor)
+        MessageLensEditorController.attach(project, editor, settingsProvider = { LogLensApplicationState() })
 
     private fun commit(editor: Editor) {
         PsiDocumentManager.getInstance(project).commitDocument(editor.document)
