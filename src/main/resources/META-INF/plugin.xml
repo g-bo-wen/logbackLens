@@ -1,0 +1,33 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <!-- Unique identifier of the plugin. It should be FQN. It cannot be changed between the plugin versions. -->
+    <id>cn.gbk.logbackLens</id>
+
+    <!-- Public plugin name should be written in Title Case.
+     Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-name -->
+    <name>LogbackLens</name>
+
+    <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
+    <vendor>gbk</vendor>
+
+    <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
+         Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-description -->
+    <description><![CDATA[
+        Technical feasibility plugin for validating Log Lens message rendering in IntelliJ IDEA.
+        ]]></description>
+
+    <!-- Product and plugin compatibility requirements.
+         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.java</depends>
+
+    <resource-bundle>messages.MyMessageBundle</resource-bundle>
+
+    <!-- Extensions defined by the plugin.
+         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Rendering Spike" factoryClass="cn.gbk.MyToolWindowFactory"
+                    icon="AllIcons.Toolwindows.ToolWindowPalette"/>
+    </extensions>
+
+</idea-plugin>
